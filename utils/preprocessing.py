@@ -1,9 +1,10 @@
+import os
 from datasets import load_dataset
 import random
 import re
 from transformers import AutoTokenizer
+import pandas as pd
 from datasets import concatenate_datasets
-
 
 # Function to standardize column names and split into question, context, and answer
 def preprocess_bioasq(bioasq_dataset):
@@ -90,19 +91,14 @@ def split_and_downsample(dataset, target_train_size=5000, target_test_size=1000)
     
     return dataset_train, dataset_test
 
-# Tokenization function
-def tokenize_batch(batch):
-    tokenizer = AutoTokenizer.from_pretrained("roberta-base")
-    return tokenizer(
-        text=[str(q) for q in batch["question"]],
-        text_pair=[str(c) for c in batch["context"]],
-        truncation=True,
-        padding="max_length"
-    )
-
-# Save function to store tokenized data
-def save_to_disk(dataset, path):
-    dataset.save_to_disk(path)
+# Function to save the datasets as CSV
+def save_as_csv(dataset, path):
+    # Create the directory if it doesn't exist
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    
+    # Convert dataset to pandas DataFrame
+    df = pd.DataFrame(dataset)
+    df.to_csv(path, index=False)
 
 # Main function
 def main():
@@ -113,10 +109,9 @@ def main():
     legal_bench_2 = load_dataset("nguha/legalbench", "consumer_contracts_qa")
     legal_bench_3 = load_dataset("nguha/legalbench", "privacy_policy_qa")
 
-        # Preprocess datasets
+    # Preprocess datasets
     bioasq_processed = preprocess_bioasq(bio_asq)
     finqa_processed = preprocess_finqa(fin_qa)
-        # Preprocess for different legal tasks
     legalbench_processed_1 = preprocess_legalbench(legal_bench, "contract_qa")
     legalbench_processed_2 = preprocess_legalbench(legal_bench_2, "consumer_contracts_qa")
     legalbench_processed_3 = preprocess_legalbench(legal_bench_3, "privacy_policy_qa")
@@ -153,10 +148,14 @@ def main():
     tokenized_finqa = finqa_train.map(tokenize_batch, batched=True)
     tokenized_legalbench = legalbench_train.map(tokenize_batch, batched=True)
 
-    # Save the tokenized datasets to disk
-    save_to_disk(tokenized_bioasq, "data/bioasq/processed")
-    save_to_disk(tokenized_finqa, "data/finqa/processed")
-    save_to_disk(tokenized_legalbench, "data/legalbench/processed")
+    # Save the tokenized datasets to CSV
+    save_as_csv(tokenized_bioasq, "data/bioasq/processed/train.csv")
+    save_as_csv(tokenized_finqa, "data/finqa/processed/train.csv")
+    save_as_csv(tokenized_legalbench, "data/legalbench/processed/train.csv")
+
+    save_as_csv(bioasq_test, "data/bioasq/processed/test.csv")
+    save_as_csv(finqa_test, "data/finqa/processed/test.csv")
+    save_as_csv(legalbench_test, "data/legalbench/processed/test.csv")
 
     # Check the lengths to ensure proper split
     print("Legal Bench Train Set Size:", len(legalbench_train))
@@ -166,7 +165,5 @@ def main():
     print("FinQA Train Set Size:", len(finqa_train))
     print("FinQA Test Set Size:", len(finqa_test))
 
-
-    
 if __name__ == "__main__":
     main()

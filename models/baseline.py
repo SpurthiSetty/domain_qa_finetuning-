@@ -1,9 +1,8 @@
-from datasets import load_from_disk
+import pandas as pd
 from sentence_transformers import SentenceTransformer, util
 from tqdm import tqdm
 import numpy as np
-import pandas as pd
-from sklearn.metrics import f1_score
+import os
 
 # CONFIG
 DATASET_PATHS = {
@@ -14,9 +13,11 @@ DATASET_PATHS = {
 
 MODEL_NAME = "sentence-transformers/all-mpnet-base-v2"
 
+# Exact Match (EM)
 def exact_match(pred, truth):
     return int(pred.strip().lower() == truth.strip().lower())
 
+# F1 Score Calculation
 def compute_f1(pred, truth):
     pred_tokens = pred.lower().split()
     truth_tokens = truth.lower().split()
@@ -30,26 +31,50 @@ def compute_f1(pred, truth):
     f1 = 2 * (precision * recall) / (precision + recall)
     return f1
 
+# Mean Reciprocal Rank (MRR)
+def compute_mrr(predicted_ranks):
+    return np.mean([1 / (rank + 1) for rank in predicted_ranks])
+
+# nDCG (Normalized Discounted Cumulative Gain)
+def compute_ndcg(retrieved_ranks, relevant_ranks, k=10):
+    dcg = 0
+    for i in range(min(k, len(retrieved_ranks))):
+        if retrieved_ranks[i] in relevant_ranks:
+            dcg += 1 / np.log2(i + 2)
+    idcg = sum([1 / np.log2(i + 2) for i in range(min(k, len(relevant_ranks)))])
+    return dcg / idcg if idcg > 0 else 0
+
+# Function to load datasets from CSV
+def load_csv_data(dataset_name):
+    train_path = os.path.join(DATASET_PATHS[dataset_name], "train.csv")
+    test_path = os.path.join(DATASET_PATHS[dataset_name], "test.csv")
+
+    if os.path.exists(train_path) and os.path.exists(test_path):
+        train_data = pd.read_csv(train_path)
+        test_data = pd.read_csv(test_path)
+        return train_data, test_data
+    else:
+        print(f"❌ {dataset_name} - Missing 'train.csv' or 'test.csv'. Skipping...")
+        return None, None
+
+# Evaluate baseline for each dataset
 def evaluate_baseline(dataset_name):
     print(f"\n🚀 Evaluating baseline for {dataset_name}...\n")
     
-    # Load dataset and model
-    dataset = load_from_disk(DATASET_PATHS[dataset_name])
-    model = SentenceTransformer(MODEL_NAME)
+    # Load dataset
+    train_data, test_data = load_csv_data(dataset_name)
+    if train_data is None or test_data is None:
+        return
 
-    eval_data = dataset["test"] if "test" in dataset else dataset["validation"]
-    eval_data = eval_data.select(range(min(100, len(eval_data))))  # Limit to 100 samples for speed
-
-    questions = eval_data["question"]
-    contexts = eval_data["context"]
-    answers = eval_data["answer"]
+    questions = test_data["question"]
+    contexts = test_data["context"]
+    answers = test_data["answer"]
 
     # Detect invalid contexts
     invalid_indices = [
         i for i, c in enumerate(contexts)
         if not c or (isinstance(c, str) and c.strip() == "") or (isinstance(c, list) and len(c) == 0)
     ]
-
     print(f"⚠️ Found {len(invalid_indices)} empty/missing contexts out of {len(contexts)} samples.")
 
     # Filter valid entries
@@ -72,12 +97,17 @@ def evaluate_baseline(dataset_name):
     ]
 
     # Compute embeddings
+    model = SentenceTransformer(MODEL_NAME)
     context_embeddings = model.encode(normalized_contexts, convert_to_tensor=True)
 
     ranks = []
     predicted_answers = []
     true_answers = []
     results = []
+
+    # Store ranks for MRR and nDCG computation
+    predicted_ranks = []
+    relevant_ranks = []
 
     for idx, question in tqdm(enumerate(filtered_questions), total=len(filtered_questions)):
         q_emb = model.encode(question, convert_to_tensor=True)
@@ -93,6 +123,10 @@ def evaluate_baseline(dataset_name):
         em = exact_match(predicted_answer, true_answer)
         f1 = compute_f1(predicted_answer, true_answer)
 
+        # Store ranks for MRR and nDCG
+        predicted_ranks.append(top_rank)
+        relevant_ranks.append(idx)
+
         # Store detailed result
         results.append({
             "question": question,
@@ -105,23 +139,22 @@ def evaluate_baseline(dataset_name):
             "f1_score": f1
         })
 
+    # After loop, compute additional metrics
+    mrr = compute_mrr(predicted_ranks)
+    ndcg = compute_ndcg(predicted_ranks, relevant_ranks)
+
     # After loop, save DataFrame
     df = pd.DataFrame(results)
     csv_path = f"results/{dataset_name}_baseline_results.csv"
     df.to_csv(csv_path, index=False)
     print(f"📄 Saved detailed results to {csv_path}")
 
-    # # Calculate metrics
-    # top1_acc = np.mean(ranks)
-    # print(f"\n✅ {dataset_name} - Top-1 Retrieval Accuracy: {top1_acc:.4f}")
-    
-    # em_scores = [exact_match(p, t) for p, t in zip(predicted_answers, true_answers)]
-    # answer_em = np.mean(em_scores)
-    # print(f"✅ {dataset_name} - Answer Exact Match (EM): {answer_em:.4f}")
-
-    # f1_scores = [compute_f1(p, t) for p, t in zip(predicted_answers, true_answers)]
-    # avg_f1 = np.mean(f1_scores)
-    # print(f"✅ {dataset_name} - Answer F1 Score: {avg_f1:.4f}")
+    # Print metrics
+    print(f"📊 Evaluation Metrics for {dataset_name}:")
+    print(f"✅ Exact Match (EM): {np.mean([res['exact_match'] for res in results]):.4f}")
+    print(f"✅ F1 Score: {np.mean([res['f1_score'] for res in results]):.4f}")
+    print(f"✅ MRR: {mrr:.4f}")
+    print(f"✅ nDCG: {ndcg:.4f}")
 
 if __name__ == "__main__":
     for dataset in DATASET_PATHS.keys():
